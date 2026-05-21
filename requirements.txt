@@ -5,3 +5,5 @@ pydantic
 python-multipart
 httpx
 pillow
+certifi
+oss2

@@ -280,6 +280,80 @@ MODELSCOPE_DEFAULT_LORAS = [
 MODELSCOPE_DEFAULTS_VERSION = 3
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 IMAGE_MODEL = os.getenv("IMAGE_MODEL", "gpt-image-2")
+
+OSS_AK = os.getenv("OSS_AK", "")
+OSS_SK = os.getenv("OSS_SK", "")
+OSS_BUCKET = os.getenv("OSS_BUCKET", "")
+OSS_ENDPOINT = os.getenv("OSS_ENDPOINT", "oss-cn-hangzhou.aliyuncs.com")
+OSS_UPLOAD_ENDPOINT = os.getenv("OSS_UPLOAD_ENDPOINT", "oss-accelerate.aliyuncs.com")
+OSS_PREFIX = os.getenv("OSS_PREFIX", "infinite-canvas/")
+OSS_PUBLIC_BASE = os.getenv(
+    "OSS_PUBLIC_BASE",
+    f"https://{OSS_BUCKET}.{OSS_ENDPOINT}" if OSS_BUCKET else "",
+).rstrip("/")
+OSS_ENABLED = bool(OSS_AK and OSS_SK and OSS_BUCKET)
+
+
+def _parse_model_aliases(raw):
+    raw = (raw or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return {str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()}
+    except Exception:
+        pass
+    out = {}
+    for pair in raw.split(","):
+        if ":" in pair:
+            k, v = pair.split(":", 1)
+            k, v = k.strip(), v.strip()
+            if k and v:
+                out[k] = v
+    return out
+
+
+DEFAULT_MODEL_ALIASES = _parse_model_aliases(os.getenv("MODEL_ALIASES", ""))
+
+
+def upstream_model(local_model, provider=None):
+    """把本地模型名转换为上游 API 期望的名字。优先级：provider.model_aliases > 全局 MODEL_ALIASES env > 原样。"""
+    if not local_model:
+        return local_model
+    per_provider = (provider or {}).get("model_aliases") or {}
+    if isinstance(per_provider, dict) and per_provider.get(local_model):
+        return str(per_provider[local_model])
+    if DEFAULT_MODEL_ALIASES.get(local_model):
+        return DEFAULT_MODEL_ALIASES[local_model]
+    return local_model
+
+
+def _oss_upload_sync(local_path: str, key: str) -> Optional[str]:
+    if not OSS_ENABLED:
+        return None
+    try:
+        import oss2
+    except ImportError:
+        print("[oss] oss2 未安装，跳过上传。pip install oss2")
+        return None
+    auth = oss2.Auth(OSS_AK, OSS_SK)
+    for ep in [OSS_UPLOAD_ENDPOINT, OSS_ENDPOINT]:
+        if not ep:
+            continue
+        try:
+            bucket = oss2.Bucket(auth, f"https://{ep}", OSS_BUCKET)
+            bucket.put_object_from_file(key, local_path)
+            return f"{OSS_PUBLIC_BASE}/{key}"
+        except Exception as e:
+            print(f"[oss] upload via {ep} failed: {str(e)[:160]}")
+    return None
+
+
+async def oss_upload(local_path: str, key: str) -> Optional[str]:
+    if not OSS_ENABLED:
+        return None
+    return await asyncio.to_thread(_oss_upload_sync, local_path, key)
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", "You are a helpful assistant.")
 MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
 AI_REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "120"))
@@ -400,7 +474,7 @@ def mask_secret(value):
 
 def default_api_providers():
     # 只保留 ModelScope 为强制默认平台，其他平台均可自定义增删
-    return [
+    providers = [
         {
             "id": "modelscope",
             "name": "ModelScope",
@@ -417,11 +491,36 @@ def default_api_providers():
             "ms_defaults_version": MODELSCOPE_DEFAULTS_VERSION,
         },
     ]
+    # env 里配了 COMFLY_BASE_URL 就自动注入一个默认 OpenAI 兼容平台，
+    # 前端无需手动新增就能直接用；API Key 走 COMFLY_API_KEY env。
+    if AI_BASE_URL:
+        providers.append({
+            "id": "comfly",
+            "name": os.getenv("COMFLY_NAME", "默认平台"),
+            "base_url": AI_BASE_URL,
+            "protocol": "openai",
+            "image_generation_endpoint": "",
+            "image_edit_endpoint": "",
+            "enabled": True,
+            "primary": True,
+            "image_models": IMAGE_MODELS,
+            "chat_models": CHAT_MODELS,
+            "video_models": VIDEO_MODELS,
+            "model_aliases": dict(DEFAULT_MODEL_ALIASES),
+            "ms_loras": [],
+            "ms_defaults_version": 0,
+        })
+    return providers
 
 def merge_default_api_providers(providers):
     merged = [dict(item) for item in providers]
+    defaults = default_api_providers()
+    # env 配了 comfly 默认平台但用户配置文件里没有时，注入进去
+    comfly_default = next((d for d in defaults if d["id"] == "comfly"), None)
+    if comfly_default and not any(item.get("id") == "comfly" for item in merged):
+        merged.append(comfly_default)
     # 只强制保留 modelscope（不再强制 comfly）
-    ms_default = next((d for d in default_api_providers() if d["id"] == "modelscope"), None)
+    ms_default = next((d for d in defaults if d["id"] == "modelscope"), None)
     if ms_default:
         current = next((item for item in merged if item.get("id") == "modelscope"), None)
         if not current:
@@ -523,6 +622,15 @@ def normalize_provider(item):
         protocol = "openai"
     image_generation_endpoint = normalize_endpoint_override(item.get("image_generation_endpoint"), "文生图端口")
     image_edit_endpoint = normalize_endpoint_override(item.get("image_edit_endpoint"), "图生图/编辑端口")
+    raw_aliases = item.get("model_aliases") or {}
+    if isinstance(raw_aliases, str):
+        raw_aliases = _parse_model_aliases(raw_aliases)
+    model_aliases = {}
+    if isinstance(raw_aliases, dict):
+        for k, v in raw_aliases.items():
+            k, v = str(k or "").strip(), str(v or "").strip()
+            if k and v:
+                model_aliases[k[:120]] = v[:120]
     return {
         "id": provider_id,
         "name": name,
@@ -530,6 +638,7 @@ def normalize_provider(item):
         "protocol": protocol,
         "image_generation_endpoint": image_generation_endpoint,
         "image_edit_endpoint": image_edit_endpoint,
+        "model_aliases": model_aliases,
         "enabled": bool(item.get("enabled", True)),
         "primary": bool(item.get("primary", False)),
         "image_models": model_list_from_values(item.get("image_models") or []),
@@ -1562,7 +1671,21 @@ def output_path_for(filename, category="output"):
 def output_file_from_url(url):
     if isinstance(url, dict):
         url = url.get("url", "")
-    if not url or not (url.startswith("/output/") or url.startswith("/assets/")):
+    if not url:
+        return None
+    # 兼容上传/生成后落到 OSS 的 https URL：把它反解到对应本地文件
+    if OSS_ENABLED and OSS_PUBLIC_BASE and url.startswith(OSS_PUBLIC_BASE + "/"):
+        tail = urllib.parse.unquote(url[len(OSS_PUBLIC_BASE) + 1:].split("?", 1)[0])
+        if OSS_PREFIX and tail.startswith(OSS_PREFIX):
+            tail = tail[len(OSS_PREFIX):]
+        parts = tail.split("/", 1)
+        if len(parts) == 2:
+            category, filename = parts
+            local = output_path_for(filename, category)
+            if os.path.exists(local):
+                return local
+        return None
+    if not (url.startswith("/output/") or url.startswith("/assets/")):
         return None
     clean = urllib.parse.unquote(url.split("?", 1)[0]).replace("\\", "/")
     if clean.startswith("/assets/"):
@@ -1918,7 +2041,9 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
     if image_data["type"] == "b64":
         with open(path, "wb") as f:
             f.write(base64.b64decode(image_data["value"]))
-        return output_url_for(filename, category)
+        local_url = output_url_for(filename, category)
+        oss_url = await oss_upload(path, f"{OSS_PREFIX}{category}/{filename}")
+        return oss_url or local_url
     value = image_data["value"]
     if value.startswith("/output/") or value.startswith("/assets/"):
         return value
@@ -1936,7 +2061,9 @@ async def save_ai_image_to_output(image_data, prefix="online_", category="output
                 path = output_path_for(filename, category)
             with open(path, "wb") as f:
                 f.write(response.content)
-            return output_url_for(filename, category)
+            local_url = output_url_for(filename, category)
+            oss_url = await oss_upload(path, f"{OSS_PREFIX}{category}/{filename}")
+            return oss_url or local_url
     except Exception as e:
         print(f"保存上游图片失败: {e}")
         return value
@@ -1966,7 +2093,9 @@ async def save_remote_video_to_output(url, prefix="video_", category="output"):
                 path = output_path_for(filename, category)
             with open(path, "wb") as f:
                 f.write(response.content)
-            return output_url_for(filename, category)
+            local_url = output_url_for(filename, category)
+            oss_url = await oss_upload(path, f"{OSS_PREFIX}{category}/{filename}")
+            return oss_url or local_url
     except Exception as e:
         print(f"保存上游视频失败: {e}")
         return url
@@ -2120,7 +2249,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
     async with httpx.AsyncClient(timeout=request_timeout) as client:
         response = None
         async def post_openai_edits(edit_files=None):
-            data = {"model": model, "prompt": prompt, "size": size}
+            data = {"model": upstream_model(model, provider), "prompt": prompt, "size": size}
             if quality:
                 data["quality"] = quality
             return await client.post(
@@ -2135,7 +2264,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             # APIMart 的 GPT-Image-2 图生图仍走 /images/generations，
             # 通过 image_urls 传参考图，不使用 OpenAI multipart /images/edits。
             body = {
-                "model": model,
+                "model": upstream_model(model, provider),
                 "prompt": prompt,
                 "n": 1,
                 "size": apimart_size,
@@ -2146,7 +2275,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                 body["image_urls"] = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:16]]
             response = await client.post(gen_url, headers=api_headers(provider=provider), json=body)
         elif is_gpt2 and not image_refs and not mask_refs:
-            body = {"model": model, "prompt": prompt, "size": size}
+            body = {"model": upstream_model(model, provider), "prompt": prompt, "size": size}
             if quality:
                 body["quality"] = quality
             response = await client.post(gen_url, headers=api_headers(provider=provider), json=body)
@@ -2196,7 +2325,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                 print(f"/images/edits failed ({edit_failed_status}): {edit_failed_text[:200]} → 回退到 /images/generations + image:[] JSON")
                 image_payload = [reference_to_data_url(ref, max_size=1536) for ref in image_refs[:4]]
                 body = {
-                    "model": model, "prompt": prompt, "size": size,
+                    "model": upstream_model(model, provider), "prompt": prompt, "size": size,
                     "response_format": "url", "n": 1,
                     "image": image_payload,
                 }
@@ -2209,7 +2338,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
                         detail=f"编辑接口 /images/edits 调用失败，且该平台不支持 /images/generations：{edit_failed_text[:300] or edit_failed_status}"
                     )
         else:
-            body = {"model": model, "prompt": prompt, "size": size, "response_format": "url", "n": 1}
+            body = {"model": upstream_model(model, provider), "prompt": prompt, "size": size, "response_format": "url", "n": 1}
             if quality:
                 body["quality"] = quality
             response = await client.post(
@@ -2324,7 +2453,9 @@ async def upload_ai_reference(files: List[UploadFile] = File(...)):
         path = output_path_for(filename, "input")
         with open(path, "wb") as f:
             f.write(content)
-        uploaded.append({"url": output_url_for(filename, "input"), "name": file.filename or filename})
+        local_url = output_url_for(filename, "input")
+        oss_url = await oss_upload(path, f"{OSS_PREFIX}input/{filename}")
+        uploaded.append({"url": oss_url or local_url, "name": file.filename or filename})
     return {"files": uploaded}
 
 @app.get("/api/config")
