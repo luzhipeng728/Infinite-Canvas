@@ -2563,7 +2563,10 @@ async def test_provider_connection(payload: TestConnectionPayload):
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
         if resp.status_code >= 400:
             return {"ok": False, "status": resp.status_code, "message": resp.text[:300]}
-        data = resp.json() if resp.text else {}
+        try:
+            data = resp.json() if resp.text else {}
+        except json.JSONDecodeError:
+            return {"ok": False, "status": resp.status_code, "message": f"上游返回的不是 JSON（Content-Type: {resp.headers.get('content-type','?')}），可能这个地址不是 OpenAI 兼容 API 的根路径。响应片段：{resp.text[:200]}"}
         items = (data.get("data") if isinstance(data, dict) else None) or []
         # 抽取模型 id
         ids = []
