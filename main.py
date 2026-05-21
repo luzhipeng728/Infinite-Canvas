@@ -2660,7 +2660,10 @@ async def fetch_models_from_upstream(base_url: str, api_key: str):
             resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"})
             if resp.status_code >= 400:
                 raise HTTPException(status_code=resp.status_code, detail=f"上游 /v1/models 失败：{resp.text[:300]}")
-            raw = resp.json()
+            try:
+                raw = resp.json()
+            except json.JSONDecodeError:
+                raise HTTPException(status_code=502, detail=f"上游 /v1/models 返回的不是 JSON（Content-Type: {resp.headers.get('content-type','?')}），地址可能不是 OpenAI 兼容 API 根路径。响应片段：{resp.text[:200]}")
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"请求上游模型列表失败：{e}")
     # 兼容多种返回结构：{data:[{id:...},...]} 或 {models:[...]}
