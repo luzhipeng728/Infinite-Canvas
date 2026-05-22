@@ -2546,17 +2546,24 @@ def upstream_message_from_record(item):
 
 # --- 路由接口 ---
 
+NOCACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate, private",
+    "Pragma": "no-cache",
+    "Expires": "0",
+}
+
+
 @app.get("/")
 async def index(request: Request):
-    # 未登录跳登录页
-    if auth_module.get_request_user(request) is None:
-        return FileResponse(os.path.join(STATIC_DIR, "login.html"))
-    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+    # 未登录跳登录页。HTML 响应必须禁缓存，否则浏览器会把首次的 login.html 缓存住，
+    # 登录后再访问 / 根本不发请求，直接拿缓存的旧页面。
+    target = "login.html" if auth_module.get_request_user(request) is None else "index.html"
+    return FileResponse(os.path.join(STATIC_DIR, target), headers=NOCACHE_HEADERS)
 
 
 @app.get("/login")
 async def login_page():
-    return FileResponse(os.path.join(STATIC_DIR, "login.html"))
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"), headers=NOCACHE_HEADERS)
 
 @app.get("/api/view")
 def view_image(filename: str, type: str = "input", subfolder: str = ""):
