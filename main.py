@@ -23,12 +23,14 @@ from threading import Lock
 import httpx
 from PIL import Image
 from io import BytesIO
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Header, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Header, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
+import auth as auth_module
+from fastapi import Depends
 
 QUIET_ACCESS_PATHS = {
     "/api/queue_status",
@@ -181,10 +183,37 @@ ASSET_LIBRARY_DIR = os.path.join(ASSETS_DIR, "library")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
 DATA_DIR = os.path.join(BASE_DIR, "data")
-CONVERSATION_DIR = os.path.join(DATA_DIR, "conversations")
-CANVAS_DIR = os.path.join(DATA_DIR, "canvases")
-ASSET_LIBRARY_PATH = os.path.join(DATA_DIR, "asset_library.json")
-API_PROVIDERS_FILE = os.path.join(DATA_DIR, "api_providers.json")
+USERS_DB_PATH = os.path.join(DATA_DIR, "users.sqlite")
+
+
+def _user_root() -> str:
+    """当前请求的用户专属数据目录，依赖 auth 中间件提前 set context。"""
+    u = auth_module.current_user_ctx.get()
+    if u is None:
+        raise HTTPException(status_code=401, detail="未登录")
+    p = os.path.join(DATA_DIR, "users", u.id)
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def conversation_dir() -> str:
+    p = os.path.join(_user_root(), "conversations")
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def canvas_dir() -> str:
+    p = os.path.join(_user_root(), "canvases")
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def asset_library_path() -> str:
+    return os.path.join(_user_root(), "asset_library.json")
+
+
+def api_providers_file() -> str:
+    return os.path.join(_user_root(), "providers.json")
 GLOBAL_CONFIG_FILE = os.path.join(BASE_DIR, "global_config.json")
 CANVAS_TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -232,8 +261,10 @@ load_env_file()
 COMFYUI_INSTANCES = [s.strip() for s in os.getenv("COMFYUI_INSTANCES", "127.0.0.1:8188").split(",") if s.strip()]
 COMFYUI_ADDRESS = COMFYUI_INSTANCES[0]
 
-AI_BASE_URL = os.getenv("COMFLY_BASE_URL", "https://ai.comfly.chat").rstrip("/")
-AI_API_KEY = os.getenv("COMFLY_API_KEY", "")
+# ★ 固定上游：所有用户共用同一个 base_url，前端不显示也不可改。要换上游改这一行。
+FIXED_AI_BASE_URL = os.getenv("FIXED_AI_BASE_URL", "http://104.238.205.50:11837/v1").rstrip("/")
+AI_BASE_URL = FIXED_AI_BASE_URL
+AI_API_KEY = ""  # 不再使用全局默认 key；每个用户在自己 providers.json 里保存自己的 key
 MODELSCOPE_API_KEY = os.getenv("MODELSCOPE_API_KEY", "")
 MODELSCOPE_CHAT_BASE_URL = "https://api-inference.modelscope.cn/v1"
 MODELSCOPE_DEFAULT_IMAGE_MODELS = [
@@ -473,8 +504,8 @@ def mask_secret(value):
     return f"••••••••{tail}"
 
 def default_api_providers():
-    # 只保留 ModelScope 为强制默认平台，其他平台均可自定义增删
-    providers = [
+    # 多用户模式：每个账号首次访问时生成 ModelScope + 一个默认平台（base_url 固定，key 由用户自己填）
+    return [
         {
             "id": "modelscope",
             "name": "ModelScope",
@@ -489,15 +520,12 @@ def default_api_providers():
             "video_models": [],
             "ms_loras": MODELSCOPE_DEFAULT_LORAS,
             "ms_defaults_version": MODELSCOPE_DEFAULTS_VERSION,
+            "api_key": "",
         },
-    ]
-    # env 里配了 COMFLY_BASE_URL 就自动注入一个默认 OpenAI 兼容平台，
-    # 前端无需手动新增就能直接用；API Key 走 COMFLY_API_KEY env。
-    if AI_BASE_URL:
-        providers.append({
-            "id": "comfly",
-            "name": os.getenv("COMFLY_NAME", "默认平台"),
-            "base_url": AI_BASE_URL,
+        {
+            "id": "default",
+            "name": "默认平台",
+            "base_url": FIXED_AI_BASE_URL,
             "protocol": "openai",
             "image_generation_endpoint": "",
             "image_edit_endpoint": "",
@@ -509,17 +537,17 @@ def default_api_providers():
             "model_aliases": dict(DEFAULT_MODEL_ALIASES),
             "ms_loras": [],
             "ms_defaults_version": 0,
-        })
-    return providers
+            "api_key": "",
+        },
+    ]
 
 def merge_default_api_providers(providers):
     merged = [dict(item) for item in providers]
     defaults = default_api_providers()
-    # env 配了 comfly 默认平台但用户配置文件里没有时，注入进去
-    comfly_default = next((d for d in defaults if d["id"] == "comfly"), None)
-    if comfly_default and not any(item.get("id") == "comfly" for item in merged):
-        merged.append(comfly_default)
-    # 只强制保留 modelscope（不再强制 comfly）
+    # 若用户没有 default provider，自动注入
+    if not any(item.get("id") == "default" for item in merged):
+        merged.append(next(d for d in defaults if d["id"] == "default"))
+    # 只强制保留 modelscope
     ms_default = next((d for d in defaults if d["id"] == "modelscope"), None)
     if ms_default:
         current = next((item for item in merged if item.get("id") == "modelscope"), None)
@@ -644,16 +672,17 @@ def normalize_provider(item):
         "image_models": model_list_from_values(item.get("image_models") or []),
         "chat_models": model_list_from_values(item.get("chat_models") or []),
         "video_models": model_list_from_values(item.get("video_models") or []),
+        "api_key": str(item.get("api_key") or "").strip(),
         "ms_loras": normalize_ms_loras(item.get("ms_loras") or []),
         "ms_defaults_version": int(item.get("ms_defaults_version") or 0),
     }
 
 def load_api_providers():
     defaults = default_api_providers()
-    if not os.path.exists(API_PROVIDERS_FILE):
+    if not os.path.exists(api_providers_file()):
         return defaults
     try:
-        with open(API_PROVIDERS_FILE, "r", encoding="utf-8") as f:
+        with open(api_providers_file(), "r", encoding="utf-8") as f:
             raw = json.load(f)
         providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
         return merge_default_api_providers(providers or defaults)
@@ -664,16 +693,27 @@ def load_api_providers():
 def save_api_providers(providers):
     os.makedirs(DATA_DIR, exist_ok=True)
     with GLOBAL_CONFIG_LOCK:
-        with open(API_PROVIDERS_FILE, "w", encoding="utf-8") as f:
+        with open(api_providers_file(), "w", encoding="utf-8") as f:
             json.dump(providers, f, ensure_ascii=False, indent=2)
 
+def get_provider_api_key(provider_id: str) -> str:
+    """从当前用户的 providers.json 查找指定 provider 的 api_key。"""
+    if not provider_id:
+        return ""
+    providers = load_api_providers()
+    p = next((x for x in providers if x.get("id") == provider_id), None)
+    return str((p or {}).get("api_key") or "")
+
+
 def public_provider(provider):
-    key = os.getenv(provider_key_env(provider["id"]), "")
+    # 多用户模式：api_key 存在 provider dict 内（per-user providers.json），不再走 env
+    key = str(provider.get("api_key") or "").strip()
+    public = {k: v for k, v in provider.items() if k != "api_key"}
     return {
-        **provider,
+        **public,
         "has_key": bool(key),
         "key_preview": mask_secret(key),
-        "key_env": provider_key_env(provider["id"]),
+        "key_env": "",
     }
 
 def get_primary_provider_id(providers=None):
@@ -752,14 +792,148 @@ os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
 os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(WORKFLOW_DIR, exist_ok=True)
-os.makedirs(CONVERSATION_DIR, exist_ok=True)
-os.makedirs(CANVAS_DIR, exist_ok=True)
+# conversation/canvas dirs 按用户在首次访问时由 per-user helper 自动创建
+
+# ===== 初始化账号系统 =====
+auth_module.init(USERS_DB_PATH, os.getenv("SESSION_SECRET", "ic-default-secret-change-me"))
+auth_module.bootstrap_admin(
+    os.getenv("ADMIN_USERNAME", "admin"),
+    os.getenv("ADMIN_PASSWORD", "admin123"),
+)
+
+
+# ===== 鉴权中间件 =====
+AUTH_PUBLIC_PATHS = {"/api/auth/login", "/api/auth/me", "/api/auth/bootstrap-info"}
+AUTH_PUBLIC_PREFIXES = ("/static/", "/assets/", "/output/")
+
+
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    path = request.url.path
+    # 把当前用户写进 contextvar，未登录时为 None
+    user = auth_module.get_request_user(request)
+    auth_module.current_user_ctx.set(user)
+    # 静态资源、登录页、HTML 文件本身放行；/api/ 路径除白名单外强制要求登录
+    if path.startswith("/api/") and path not in AUTH_PUBLIC_PATHS and not path.startswith("/api/auth/"):
+        if user is None:
+            return JSONResponse({"detail": "未登录"}, status_code=401)
+    response = await call_next(request)
+    return response
+
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 # --- Pydantic 模型 ---
+
+
+# ===== 账号系统 =====
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordPayload(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class CreateUserPayload(BaseModel):
+    username: str
+    password: str
+    is_admin: bool = False
+
+
+class ResetPasswordPayload(BaseModel):
+    new_password: str
+
+
+@app.post("/api/auth/login")
+async def auth_login(payload: LoginPayload, response: Response):
+    user = auth_module.authenticate(payload.username.strip(), payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    auth_module.set_session_cookie(response, user.id)
+    return {"id": user.id, "username": user.username, "is_admin": user.is_admin, "must_change_password": user.must_change_password}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response):
+    auth_module.clear_session_cookie(response)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    user = auth_module.get_request_user(request)
+    if not user:
+        return {"authenticated": False}
+    return {
+        "authenticated": True,
+        "id": user.id,
+        "username": user.username,
+        "is_admin": user.is_admin,
+        "must_change_password": user.must_change_password,
+    }
+
+
+@app.post("/api/auth/change-password")
+async def auth_change_password(payload: ChangePasswordPayload, request: Request):
+    user = auth_module.require_user(request)
+    if not auth_module.authenticate(user.username, payload.old_password):
+        raise HTTPException(status_code=400, detail="原密码错误")
+    auth_module.update_password(user.id, payload.new_password, clear_must_change=True)
+    return {"ok": True}
+
+
+@app.get("/api/admin/users")
+async def admin_list_users(request: Request):
+    auth_module.require_admin(request)
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "is_admin": u.is_admin,
+            "must_change_password": u.must_change_password,
+            "created_at": u.created_at,
+        }
+        for u in auth_module.list_users()
+    ]
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(payload: CreateUserPayload, request: Request):
+    auth_module.require_admin(request)
+    u = auth_module.create_user(payload.username.strip(), payload.password, is_admin=payload.is_admin, must_change_password=True)
+    return {"id": u.id, "username": u.username, "is_admin": u.is_admin}
+
+
+@app.post("/api/admin/users/{user_id}/reset-password")
+async def admin_reset_password(user_id: str, payload: ResetPasswordPayload, request: Request):
+    auth_module.require_admin(request)
+    target = auth_module.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    auth_module.update_password(user_id, payload.new_password, clear_must_change=False)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, request: Request):
+    me = auth_module.require_admin(request)
+    if user_id == me.id:
+        raise HTTPException(status_code=400, detail="不能删除自己")
+    target = auth_module.get_user(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    auth_module.delete_user(user_id)
+    udir = os.path.join(DATA_DIR, "users", user_id)
+    if os.path.isdir(udir):
+        shutil.rmtree(udir, ignore_errors=True)
+    return {"ok": True}
+
 
 @app.get("/api/app-info")
 def app_info():
@@ -1320,7 +1494,7 @@ def safe_user_id(user_id, request: Request):
     return candidate or "anonymous"
 
 def user_dir(user_id):
-    path = os.path.join(CONVERSATION_DIR, user_id)
+    path = os.path.join(conversation_dir(), user_id)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -1384,7 +1558,7 @@ def canvas_path(canvas_id):
     cleaned = re.sub(r"[^a-zA-Z0-9_-]", "", canvas_id or "")
     if not cleaned:
         raise HTTPException(status_code=400, detail="无效的画布 ID")
-    return os.path.join(CANVAS_DIR, f"{cleaned}.json")
+    return os.path.join(canvas_dir(), f"{cleaned}.json")
 
 def save_canvas(canvas):
     canvas["updated_at"] = now_ms()
@@ -1444,10 +1618,10 @@ def canvas_record(data):
 def cleanup_expired_canvas_trash():
     cutoff = now_ms() - CANVAS_TRASH_RETENTION_MS
     with CANVAS_LOCK:
-        for filename in os.listdir(CANVAS_DIR):
+        for filename in os.listdir(canvas_dir()):
             if not filename.endswith(".json"):
                 continue
-            path = os.path.join(CANVAS_DIR, filename)
+            path = os.path.join(canvas_dir(), filename)
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
@@ -1460,11 +1634,11 @@ def cleanup_expired_canvas_trash():
 def iter_canvas_records(include_deleted=False):
     cleanup_expired_canvas_trash()
     records = []
-    for filename in os.listdir(CANVAS_DIR):
+    for filename in os.listdir(canvas_dir()):
         if not filename.endswith(".json"):
             continue
         try:
-            with open(os.path.join(CANVAS_DIR, filename), 'r', encoding='utf-8') as f:
+            with open(os.path.join(canvas_dir(), filename), 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except Exception:
             continue
@@ -1506,15 +1680,12 @@ def resolve_chat_provider(provider: str, model: str, ms_model: str):
 
 def api_headers(json_body=True, provider=None):
     if provider:
-        key_env = provider_key_env(provider["id"])
-        api_key = os.getenv(key_env, "")
+        api_key = str(provider.get("api_key") or "").strip()
         provider_name = provider.get("name") or provider["id"]
         if not api_key:
             raise HTTPException(status_code=400, detail=f"未配置 {provider_name} 的 API Key，请在 API 平台管理中填写。")
     else:
-        api_key = AI_API_KEY
-        if not api_key:
-            raise HTTPException(status_code=400, detail="未配置 COMFLY_API_KEY，请在 API/.env 中填写。")
+        raise HTTPException(status_code=400, detail="未指定 API 平台")
     headers = {"Accept": "application/json", "Authorization": f"Bearer {api_key}"}
     if json_body:
         headers["Content-Type"] = "application/json"
@@ -1714,12 +1885,12 @@ def default_asset_library():
     }
 
 def load_asset_library():
-    if not os.path.exists(ASSET_LIBRARY_PATH):
+    if not os.path.exists(asset_library_path()):
         lib = default_asset_library()
         save_asset_library(lib)
         return lib
     try:
-        with open(ASSET_LIBRARY_PATH, "r", encoding="utf-8") as f:
+        with open(asset_library_path(), "r", encoding="utf-8") as f:
             lib = json.load(f)
     except Exception:
         lib = default_asset_library()
@@ -1733,7 +1904,7 @@ def load_asset_library():
 def save_asset_library(lib):
     lib["updated_at"] = now_ms()
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(ASSET_LIBRARY_PATH, "w", encoding="utf-8") as f:
+    with open(asset_library_path(), "w", encoding="utf-8") as f:
         json.dump(lib, f, ensure_ascii=False, indent=2)
 
 def find_asset_category(lib, category_id):
@@ -2376,8 +2547,16 @@ def upstream_message_from_record(item):
 # --- 路由接口 ---
 
 @app.get("/")
-async def index():
+async def index(request: Request):
+    # 未登录跳登录页
+    if auth_module.get_request_user(request) is None:
+        return FileResponse(os.path.join(STATIC_DIR, "login.html"))
     return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+
+
+@app.get("/login")
+async def login_page():
+    return FileResponse(os.path.join(STATIC_DIR, "login.html"))
 
 @app.get("/api/view")
 def view_image(filename: str, type: str = "input", subfolder: str = ""):
@@ -2486,39 +2665,33 @@ async def api_providers():
 
 @app.put("/api/providers")
 async def save_providers(payload: List[ApiProviderPayload]):
+    # 加载该用户现有 providers，用来在新 payload 没传 api_key 时保留旧 key
+    existing_keys = {p["id"]: str(p.get("api_key") or "") for p in load_api_providers()}
     providers = []
-    env_updates = {}
-    # 收集每个 item 的 primary 字段
     raw_primary_flags = [bool(getattr(item, "primary", False)) for item in payload]
     for item in payload:
         provider = normalize_provider(item.dict(exclude={"api_key"}))
+        # 默认平台 base_url 锁死为 FIXED_AI_BASE_URL，前端不能改
+        if provider["id"] == "default":
+            provider["base_url"] = FIXED_AI_BASE_URL
         if any(existing["id"] == provider["id"] for existing in providers):
             raise HTTPException(status_code=400, detail=f"API 平台 ID 重复：{provider['id']}")
-        providers.append(provider)
-        key_env = provider_key_env(provider["id"])
+        # 处理 api_key
         if item.clear_key:
-            env_updates[key_env] = ""
+            provider["api_key"] = ""
         elif item.api_key is not None and item.api_key.strip():
-            env_updates[key_env] = item.api_key.strip()
-        if provider["id"] == "comfly":
-            env_updates["COMFLY_BASE_URL"] = provider["base_url"]
-            env_updates["IMAGE_MODELS"] = ",".join(provider["image_models"])
-            env_updates["CHAT_MODELS"] = ",".join(provider["chat_models"])
-            env_updates["VIDEO_MODELS"] = ",".join(provider.get("video_models") or [])
-        if provider["id"] == "modelscope":
-            env_updates["MODELSCOPE_CHAT_MODELS"] = ",".join(provider["chat_models"])
+            provider["api_key"] = item.api_key.strip()
+        else:
+            provider["api_key"] = existing_keys.get(provider["id"], "")
+        providers.append(provider)
     if not providers:
         raise HTTPException(status_code=400, detail="至少保留一个 API 平台")
-    # 强制最多一个 primary（取最后被标记的；都没标记则保持原样不强制）
     primary_indices = [i for i, flag in enumerate(raw_primary_flags) if flag]
     if primary_indices:
         winner = primary_indices[-1]
         for i, p in enumerate(providers):
             p["primary"] = (i == winner)
     save_api_providers(providers)
-    if env_updates:
-        update_env_values(env_updates)
-        reload_env_globals()   # 立即将最新 env 值同步回模块全局变量，无需重启
     return {"providers": [public_provider(p) for p in providers]}
 
 # --- ModelScope Token (从 env 读取，不再支持通过 UI 修改) ---
@@ -2554,7 +2727,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail="请求地址必须以 http:// 或 https:// 开头")
     api_key = (payload.api_key or "").strip()
     if not api_key and payload.provider_id:
-        api_key = os.getenv(provider_key_env(payload.provider_id), "")
+        api_key = get_provider_api_key(payload.provider_id)
     if not api_key:
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
     url = f"{base_url}/models" if base_url.endswith("/v1") else f"{base_url}/v1/models"
@@ -2604,7 +2777,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail="请先填写请求地址")
     api_key = (payload.api_key or "").strip()
     if not api_key and payload.provider_id:
-        api_key = os.getenv(provider_key_env(payload.provider_id), "")
+        api_key = get_provider_api_key(payload.provider_id)
     if not api_key:
         raise HTTPException(status_code=400, detail="请先填写或保存 API Key")
     tasks_base = base_url if base_url.endswith("/v1") else f"{base_url}/v1"
@@ -2701,14 +2874,14 @@ async def fetch_upstream_models_from_payload(payload: TestConnectionPayload):
     """按页面当前表单值拉取模型，支持新增平台未保存时直接使用临时 Base URL / Key。"""
     api_key = (payload.api_key or "").strip()
     if not api_key and payload.provider_id:
-        api_key = os.getenv(provider_key_env(payload.provider_id), "")
+        api_key = get_provider_api_key(payload.provider_id)
     return await fetch_models_from_upstream(payload.base_url, api_key)
 
 @app.get("/api/providers/{provider_id}/fetch-models")
 async def fetch_upstream_models(provider_id: str):
     """从已保存的上游 OpenAI 兼容接口拉取 /v1/models 列表，按名称智能分类为 image/chat/video。"""
     provider = get_api_provider_exact(provider_id)
-    api_key = os.getenv(provider_key_env(provider["id"]), "")
+    api_key = str(provider.get("api_key") or "")
     if not api_key:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider_id} 未配置 API Key")
     return await fetch_models_from_upstream(provider.get("base_url") or "", api_key)
@@ -2933,7 +3106,7 @@ async def canvas_video(payload: CanvasVideoRequest):
     base_url = video_api_root(provider)
     if not base_url:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
-    api_key = os.getenv(provider_key_env(provider["id"]), "")
+    api_key = str(provider.get("api_key") or "")
     if not api_key:
         raise HTTPException(status_code=400, detail=f"未配置 {provider.get('name') or provider['id']} 的 API Key，请在 API 设置中填写。")
     is_apimart = is_apimart_provider(provider)

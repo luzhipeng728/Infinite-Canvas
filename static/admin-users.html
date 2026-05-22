@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>账号管理 · Infinite Canvas</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",PingFang SC,sans-serif;margin:0;padding:32px;background:#f7f7f8;color:#1a1a1a;max-width:880px;margin:0 auto;}
+  h1{font-size:22px;margin:0 0 4px;}
+  .sub{color:#999;font-size:13px;margin-bottom:24px;}
+  .row{display:flex;gap:8px;align-items:center;margin-bottom:16px;flex-wrap:wrap;}
+  input,button,select{height:36px;padding:0 12px;border:1px solid #ddd;border-radius:8px;background:#fff;font-size:13px;}
+  button{background:#111;color:#fff;border-color:#111;cursor:pointer;font-weight:600;}
+  button.ghost{background:#fff;color:#111;}
+  button.danger{background:#d33;border-color:#d33;}
+  button:disabled{opacity:0.4;cursor:not-allowed;}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:12px;overflow:hidden;border:1px solid #eee;}
+  th,td{text-align:left;padding:12px 14px;font-size:13px;border-bottom:1px solid #f0f0f0;}
+  th{background:#fafafa;font-weight:600;color:#666;font-size:12px;letter-spacing:0.02em;}
+  tr:last-child td{border-bottom:0;}
+  .actions{display:flex;gap:6px;}
+  .actions button{height:30px;padding:0 10px;font-size:12px;}
+  .err{color:#d33;font-size:13px;margin-top:10px;}
+  .ok{color:#0a0;font-size:13px;margin-top:10px;}
+  .tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;background:#eef;color:#338;}
+  .tag.admin{background:#fee;color:#a40;}
+  .top{display:flex;justify-content:space-between;align-items:center;}
+  a{color:#06c;text-decoration:none;}
+</style>
+</head>
+<body>
+<div class="top">
+  <div>
+    <h1>账号管理</h1>
+    <div class="sub">仅管理员可访问 · <a href="/">返回画布</a> · <a href="javascript:logout()">登出</a></div>
+  </div>
+</div>
+
+<h3 style="margin-top:24px;font-size:15px">新增账号</h3>
+<div class="row">
+  <input id="newUsername" placeholder="用户名" style="width:160px">
+  <input id="newPassword" placeholder="初始密码（至少 6 位）" type="password" style="width:220px">
+  <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
+    <input id="newIsAdmin" type="checkbox"> 管理员
+  </label>
+  <button onclick="createUser()">创建</button>
+  <span id="createMsg"></span>
+</div>
+
+<h3 style="margin-top:24px;font-size:15px">现有账号</h3>
+<table>
+  <thead><tr><th>用户名</th><th>角色</th><th>创建时间</th><th>状态</th><th>操作</th></tr></thead>
+  <tbody id="userBody"><tr><td colspan="5" style="color:#999;text-align:center">加载中…</td></tr></tbody>
+</table>
+
+<script>
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = '/login'; return; }
+  if (r.status === 403) { document.body.innerHTML = '<h1 style="padding:60px;text-align:center">无权访问，仅管理员可用</h1>'; throw new Error('forbidden'); }
+  if (!r.ok) {
+    const err = await r.json().catch(()=>({}));
+    throw new Error(err.detail || ('HTTP ' + r.status));
+  }
+  return r.json();
+}
+
+async function refresh() {
+  try {
+    const users = await api('/api/admin/users');
+    const tbody = document.getElementById('userBody');
+    tbody.innerHTML = users.map(u => `
+      <tr>
+        <td><b>${escape(u.username)}</b></td>
+        <td><span class="tag ${u.is_admin?'admin':''}">${u.is_admin?'管理员':'普通用户'}</span></td>
+        <td>${new Date(u.created_at*1000).toLocaleString('zh-CN')}</td>
+        <td>${u.must_change_password?'<span style="color:#a60">需改密</span>':'<span style="color:#0a0">正常</span>'}</td>
+        <td class="actions">
+          <button class="ghost" onclick="resetPw('${u.id}','${escape(u.username)}')">重置密码</button>
+          <button class="danger" onclick="delUser('${u.id}','${escape(u.username)}')">删除</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    document.getElementById('userBody').innerHTML = `<tr><td colspan="5" style="color:#d33">加载失败：${e.message}</td></tr>`;
+  }
+}
+
+async function createUser() {
+  const username = document.getElementById('newUsername').value.trim();
+  const password = document.getElementById('newPassword').value;
+  const is_admin = document.getElementById('newIsAdmin').checked;
+  const msg = document.getElementById('createMsg');
+  msg.textContent = '';
+  msg.className = '';
+  if (!username || password.length < 6) { msg.textContent = '请填用户名 + 至少 6 位密码'; msg.className='err'; return; }
+  try {
+    await api('/api/admin/users', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username, password, is_admin})});
+    msg.textContent = '✓ 已创建'; msg.className='ok';
+    document.getElementById('newUsername').value='';
+    document.getElementById('newPassword').value='';
+    document.getElementById('newIsAdmin').checked=false;
+    refresh();
+  } catch (e) { msg.textContent = '✗ ' + e.message; msg.className='err'; }
+}
+
+async function resetPw(id, name) {
+  const np = prompt(`重置 ${name} 的密码（至少 6 位）：`);
+  if (!np || np.length < 6) return;
+  try {
+    await api(`/api/admin/users/${id}/reset-password`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({new_password: np})});
+    alert('已重置');
+  } catch (e) { alert('失败：' + e.message); }
+}
+
+async function delUser(id, name) {
+  if (!confirm(`确定删除账号 "${name}"？该账号下的画布/对话/provider 配置也会一并清理`)) return;
+  try {
+    await api(`/api/admin/users/${id}`, {method:'DELETE'});
+    refresh();
+  } catch (e) { alert('失败：' + e.message); }
+}
+
+async function logout() {
+  await fetch('/api/auth/logout', {method:'POST'});
+  location.href = '/login';
+}
+
+function escape(s) { return String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c])); }
+
+refresh();
+</script>
+</body>
+</html>

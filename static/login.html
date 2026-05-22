@@ -1,292 +1,116 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <title>Impact & Bound Square - Enhanced</title>
-    <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            background-color: #000; 
-            font-family: 'Inter', -apple-system, sans-serif;
-        }
-        canvas { display: block; }
-        
-        #loginForm {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -40%);
-            opacity: 0;
-            visibility: hidden;
-            transition: all 0.8s cubic-bezier(0.16, 1, 0.3, 1);
-            z-index: 10;
-            width: 280px;
-            padding: 45px;
-            background: rgba(255, 255, 255, 0.02);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border-radius: 40px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-        
-        #loginForm.visible {
-            opacity: 1;
-            visibility: visible;
-            transform: translate(-50%, -50%);
-        }
-        
-        .label {
-            color: rgba(255, 255, 255, 0.3);
-            font-size: 10px;
-            letter-spacing: 4px;
-            margin-bottom: 8px;
-            text-transform: uppercase;
-        }
-
-        .form-group {
-            position: relative;
-            margin-bottom: 35px;
-        }
-        
-        .form-group input {
-            width: 100%;
-            padding: 12px 0;
-            background: transparent;
-            border: none;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-            color: #fff;
-            font-size: 14px;
-            outline: none;
-        }
-
-        .form-group::after {
-            content: '';
-            position: absolute;
-            bottom: 0; left: 0;
-            width: 0; height: 1px;
-            background: #fff;
-            transition: width 0.6s ease;
-        }
-
-        .form-group input:focus ~ ::after { width: 100%; }
-        
-        #loginButton {
-            width: 100%;
-            padding: 16px;
-            background: #fff;
-            border: none;
-            border-radius: 50px;
-            color: #000;
-            font-size: 11px;
-            font-weight: 800;
-            letter-spacing: 6px;
-            cursor: pointer;
-            transition: all 0.4s;
-            margin-top: 10px;
-        }
-        
-        #loginButton:hover {
-            transform: scale(1.05);
-            box-shadow: 0 0 40px rgba(255, 255, 255, 0.4);
-        }
-
-        .timestamp {
-            position: absolute;
-            top: 40px;
-            right: 40px;
-            color: rgba(255, 255, 255, 0.15);
-            font-size: 10px;
-            font-family: monospace;
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 · Infinite Canvas</title>
+<style>
+  html,body{margin:0;height:100%;background:#fafafa;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",PingFang SC,sans-serif;color:#1a1a1a;}
+  .wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .card{width:100%;max-width:380px;background:#fff;border:1px solid #e6e6e6;border-radius:16px;padding:32px 28px;box-shadow:0 8px 32px rgba(0,0,0,0.04);}
+  h1{margin:0 0 6px;font-size:22px;font-weight:700;}
+  .sub{margin:0 0 24px;color:#888;font-size:13px;}
+  .field{display:block;margin-bottom:14px;}
+  .field label{display:block;font-size:12px;color:#666;margin-bottom:6px;font-weight:600;letter-spacing:0.02em;}
+  .field input{box-sizing:border-box;width:100%;height:40px;padding:0 12px;border:1px solid #ddd;border-radius:8px;background:transparent;color:inherit;font-size:14px;outline:none;}
+  .field input:focus{border-color:#222;}
+  .btn{display:block;width:100%;height:42px;background:#111;color:#fff;border:0;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;}
+  .btn:hover{background:#000;}
+  .btn:disabled{opacity:0.5;cursor:not-allowed;}
+  .err{color:#d33;font-size:13px;margin-top:10px;min-height:18px;}
+  .hint{margin-top:18px;font-size:12px;color:#999;text-align:center;}
+  .hint code{background:rgba(0,0,0,0.05);padding:1px 6px;border-radius:4px;font-family:ui-monospace,monospace;}
+</style>
 </head>
 <body>
-<div class="timestamp" id="timer"></div>
-<canvas id="sandCanvas"></canvas>
-
-<div id="loginForm">
-    <div class="form-group">
-        <div class="label">Identity</div>
-        <input type="text" id="username" placeholder=" " autocomplete="off">
+<div class="wrap">
+  <form class="card" id="loginForm">
+    <h1 id="title">登录</h1>
+    <p class="sub" id="sub">输入账号与密码继续</p>
+    <div class="field">
+      <label for="username">用户名</label>
+      <input id="username" name="username" autocomplete="username" required>
     </div>
-    <div class="form-group">
-        <div class="label">Access Code</div>
-        <input type="password" id="password" placeholder=" " autocomplete="off">
+    <div class="field">
+      <label for="password">密码</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
     </div>
-    <button id="loginButton">CONNECT</button>
+    <div class="field" id="newPasswordField" style="display:none">
+      <label for="newPassword">新密码（至少 6 位）</label>
+      <input id="newPassword" name="newPassword" type="password" autocomplete="new-password" minlength="6">
+    </div>
+    <button class="btn" type="submit" id="submitBtn">登录</button>
+    <div class="err" id="err"></div>
+    <div class="hint">首次启动默认 <code>admin</code> / <code>admin123</code>，登录后请修改密码</div>
+  </form>
 </div>
-
 <script>
-const canvas = document.getElementById('sandCanvas');
-const ctx = canvas.getContext('2d');
-const loginForm = document.getElementById('loginForm');
-const timerEl = document.getElementById('timer');
+const form = document.getElementById('loginForm');
+const errEl = document.getElementById('err');
+const submitBtn = document.getElementById('submitBtn');
+const newPwField = document.getElementById('newPasswordField');
+const titleEl = document.getElementById('title');
+const subEl = document.getElementById('sub');
+let mustChangeMode = false;
+let cachedCreds = null;
 
-let width, height, particles = [];
-const particleCount = 4500; 
-const mouseThreshold = 220;
-let isHovering = false;
-let noiseTimer = 0;
-
-function updateTimer() {
-    const now = new Date();
-    timerEl.innerText = now.toLocaleString('en-GB').toUpperCase();
-}
-setInterval(updateTimer, 1000);
-
-window.addEventListener('resize', init);
-window.addEventListener('mousemove', (e) => {
-    const dx = e.clientX - width / 2;
-    const dy = e.clientY - height / 2;
-    isHovering = Math.sqrt(dx*dx + dy*dy) < mouseThreshold;
-});
-
-function isInsideRoundedSquare(px, py, halfSide, radius) {
-    const dx = Math.abs(px - width / 2);
-    const dy = Math.abs(py - height / 2);
-    if (dx > halfSide || dy > halfSide) return false;
-    if (dx > halfSide - radius && dy > halfSide - radius) {
-        const cx = dx - (halfSide - radius);
-        const cy = dy - (halfSide - radius);
-        return (cx * cx + cy * cy <= radius * radius);
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errEl.textContent = '';
+  submitBtn.disabled = true;
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  try {
+    if (mustChangeMode) {
+      const newPassword = document.getElementById('newPassword').value;
+      if (!newPassword || newPassword.length < 6) {
+        errEl.textContent = '新密码至少 6 位';
+        submitBtn.disabled = false;
+        return;
+      }
+      const r = await fetch('/api/auth/change-password', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({old_password: cachedCreds.password, new_password: newPassword}),
+      });
+      if (!r.ok) {
+        errEl.textContent = (await r.json().catch(()=>({}))).detail || '修改密码失败';
+        submitBtn.disabled = false;
+        return;
+      }
+      location.replace('/');
+      return;
     }
-    return true;
-}
-
-class Particle {
-    constructor() {
-        this.init();
-    }
-
-    init() {
-        const angle = Math.random() * Math.PI * 2;
-        // 重置时从中心稍外一点出生，避免堆在原点
-        const r = 5 + Math.random() * 15; 
-        this.x = width / 2 + Math.cos(angle) * r;
-        this.y = height / 2 + Math.sin(angle) * r;
-        this.vx = Math.cos(angle) * 2;
-        this.vy = Math.sin(angle) * 2;
-        this.size = Math.random() * 1.6;
-        this.alpha = Math.random() * 0.5 + 0.2;
-        this.isEscaping = false; 
-    }
-
-    update(breath) {
-        const dx = this.x - width / 2;
-        const dy = this.y - height / 2;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-
-        if (isHovering) {
-            this.vx += (Math.random() - 0.5) * 4;
-            this.vy += (Math.random() - 0.5) * 4;
-        } else {
-            // 1. 中心核心斥力 (防止从中心穿过)
-            const repulsionRadius = 45; 
-            if (dist < repulsionRadius) {
-                const force = (repulsionRadius - dist) / repulsionRadius;
-                this.vx += (dx / dist) * force * 6; 
-                this.vy += (dy / dist) * force * 6;
-            }
-
-            // 2. 爆发力 (随呼吸曲线)
-            const pushBase = Math.pow(breath, 5) * 14;
-            const randomScatter = (Math.random() - 0.5) * pushBase * 0.5;
-            this.vx += (dx / dist) * pushBase + randomScatter;
-            this.vy += (dy / dist) * pushBase + randomScatter;
-
-            // 3. 抛飞逃逸逻辑：呼吸最强时极小概率触发
-            if (breath > 0.88 && Math.random() > 0.98) {
-                this.isEscaping = true;
-            }
-
-            // 4. 边界逻辑
-            const side = 180; 
-            const cornerR = 80; 
-
-            if (!this.isEscaping) {
-                if (!isInsideRoundedSquare(this.x + this.vx, this.y + this.vy, side, cornerR)) {
-                    this.vx *= -0.4; // 碰撞衰减
-                    this.vy *= -0.4;
-                    this.vx += (Math.random() - 0.5) * 2;
-                    this.vy += (Math.random() - 0.5) * 2;
-                }
-
-                // 5. 向心引力：回归到圆环
-                const targetR = 140;
-                const pull = (targetR - dist) * 0.012; 
-                this.vx += (dx / dist) * pull;
-                this.vy += (dy / dist) * pull;
-            }
-        }
-
-        this.x += this.vx;
-        this.y += this.vy;
-        
-        // 摩擦力
-        const friction = this.isEscaping ? 0.98 : 0.86;
-        this.vx *= friction;
-        this.vy *= friction;
-
-        // 6. 重置：飞出界外或速度几乎停滞的逃逸粒子
-        if (dist > width * 0.6 || (this.isEscaping && Math.abs(this.vx) < 0.05)) {
-            this.init();
-        }
-    }
-
-    draw(breath) {
-        const b = 180 + breath * 75;
-        const finalAlpha = this.isEscaping ? this.alpha * 0.4 : this.alpha;
-        ctx.fillStyle = `rgba(${b}, ${b}, ${b}, ${finalAlpha})`;
-        ctx.fillRect(this.x, this.y, this.size, this.size);
-    }
-}
-
-function init() {
-    width = canvas.width = window.innerWidth;
-    height = canvas.height = window.innerHeight;
-    particles = [];
-    for (let i = 0; i < particleCount; i++) particles.push(new Particle());
-}
-
-function drawCore(breath) {
-    if (isHovering) return;
-    const size = 10 + breath * 4;
-    ctx.save();
-    ctx.shadowBlur = 40 * breath;
-    ctx.shadowColor = '#fff';
-    ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(width / 2, height / 2, size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-}
-
-function animate() {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-    ctx.fillRect(0, 0, width, height);
-
-    noiseTimer += 0.04;
-    const breath = Math.pow((Math.sin(noiseTimer) + 1) / 2, 2);
-
-    if (isHovering) {
-        loginForm.classList.add('visible');
-    } else {
-        loginForm.classList.remove('visible');
-    }
-
-    particles.forEach(p => {
-        p.update(breath);
-        p.draw(breath);
+    const r = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username, password}),
     });
-
-    drawCore(breath);
-    requestAnimationFrame(animate);
-}
-
-init();
-updateTimer();
-animate();
+    if (!r.ok) {
+      errEl.textContent = (await r.json().catch(()=>({}))).detail || '登录失败';
+      submitBtn.disabled = false;
+      return;
+    }
+    const data = await r.json();
+    if (data.must_change_password) {
+      mustChangeMode = true;
+      cachedCreds = {username, password};
+      titleEl.textContent = '首次登录，请设置新密码';
+      subEl.textContent = '安全考虑，请修改默认密码';
+      document.getElementById('username').disabled = true;
+      document.getElementById('password').disabled = true;
+      newPwField.style.display = 'block';
+      document.getElementById('newPassword').focus();
+      submitBtn.textContent = '保存新密码并进入';
+      submitBtn.disabled = false;
+      return;
+    }
+    location.replace('/');
+  } catch (e) {
+    errEl.textContent = '网络错误：' + (e.message || e);
+    submitBtn.disabled = false;
+  }
+});
 </script>
 </body>
 </html>
