@@ -612,12 +612,18 @@
             updateIdPreview();
             clearVerifyResult();
             baseInput.value = item.base_url || '';
-            // default 平台 + modelscope：base_url 服务端锁死，前端置灰只读
+            // default 平台 + modelscope：base_url 服务端锁死，前端彻底禁用
             const isLockedBase = (item.id === 'default' || item.id === 'modelscope');
+            baseInput.disabled = isLockedBase;
             baseInput.readOnly = isLockedBase;
             baseInput.title = isLockedBase ? '该平台的请求地址由服务端固定，不可修改' : '';
-            baseInput.style.cursor = isLockedBase ? 'not-allowed' : '';
-            baseInput.style.opacity = isLockedBase ? '0.6' : '';
+            const baseFrame = baseInput.closest('.field-frame');
+            if (baseFrame) {
+                baseFrame.style.opacity = isLockedBase ? '0.55' : '';
+                baseFrame.style.background = isLockedBase ? 'rgba(0,0,0,0.04)' : '';
+                baseFrame.style.cursor = isLockedBase ? 'not-allowed' : '';
+                baseFrame.style.pointerEvents = isLockedBase ? 'none' : '';
+            }
             if(protocolInput) protocolInput.value = item.protocol || 'openai';
             if(imageGenerationEndpointInput) imageGenerationEndpointInput.value = item.image_generation_endpoint || '';
             if(imageEditEndpointInput) imageEditEndpointInput.value = item.image_edit_endpoint || '';
