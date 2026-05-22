@@ -2660,6 +2660,7 @@ async def ai_config():
         "has_api_key": bool(AI_API_KEY),
         "ms_chat_models": MODELSCOPE_CHAT_MODELS,
         "has_ms_key": bool(MODELSCOPE_API_KEY),
+        "is_admin": bool(auth_module.current_user_ctx.get() and auth_module.current_user_ctx.get().is_admin),
     }
 
 @app.get("/api/models")
@@ -2676,12 +2677,14 @@ async def save_providers(payload: List[ApiProviderPayload]):
     existing_keys = {p["id"]: str(p.get("api_key") or "") for p in load_api_providers()}
     providers = []
     raw_primary_flags = [bool(getattr(item, "primary", False)) for item in payload]
-    ALLOWED_IDS = {"default", "modelscope"}
+    # 普通用户只能用内置平台；admin 可以自由添加其他 provider 用于测试
+    current = auth_module.current_user_ctx.get()
+    BUILTIN_IDS = {"default", "modelscope"}
+    is_admin = bool(current and current.is_admin)
     for item in payload:
         provider = normalize_provider(item.dict(exclude={"api_key"}))
-        # 只允许内置的两个平台，禁止用户自建
-        if provider["id"] not in ALLOWED_IDS:
-            raise HTTPException(status_code=403, detail=f"不允许新增/修改自定义平台：{provider['id']}")
+        if not is_admin and provider["id"] not in BUILTIN_IDS:
+            raise HTTPException(status_code=403, detail=f"普通用户不能新增自定义平台：{provider['id']}")
         # 内置平台 base_url 服务端锁死，无视前端值
         if provider["id"] == "default":
             provider["base_url"] = FIXED_AI_BASE_URL
