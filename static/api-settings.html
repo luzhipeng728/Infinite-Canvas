@@ -562,7 +562,10 @@
             item.id = nextId;
             if(oldId !== item.id) selectedId = item.id;
             item.name = nameInput.value.trim() || item.id;
-            item.base_url = baseInput.value.trim();
+            // default / modelscope 的 base_url 服务端固定，前端不再从输入框覆盖（避免锁定状态下取到异常值）
+            if (item.id !== 'default' && item.id !== 'modelscope') {
+                item.base_url = baseInput.value.trim();
+            }
             // MS 固定使用 OpenAI 协议，不从下拉读取
             item.protocol = (item.id === 'modelscope') ? 'openai' : (protocolInput?.value || 'openai');
             item.image_generation_endpoint = normalizeEndpointSetting(endpointValue(imageGenerationEndpointInput));

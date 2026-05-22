@@ -2675,9 +2675,11 @@ async def save_providers(payload: List[ApiProviderPayload]):
         # 只允许内置的两个平台，禁止用户自建
         if provider["id"] not in ALLOWED_IDS:
             raise HTTPException(status_code=403, detail=f"不允许新增/修改自定义平台：{provider['id']}")
-        # 默认平台 base_url 锁死为 FIXED_AI_BASE_URL，前端不能改
+        # 内置平台 base_url 服务端锁死，无视前端值
         if provider["id"] == "default":
             provider["base_url"] = FIXED_AI_BASE_URL
+        elif provider["id"] == "modelscope":
+            provider["base_url"] = MODELSCOPE_CHAT_BASE_URL
         if any(existing["id"] == provider["id"] for existing in providers):
             raise HTTPException(status_code=400, detail=f"API 平台 ID 重复：{provider['id']}")
         # 处理 api_key
