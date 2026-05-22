@@ -688,6 +688,23 @@
                     </svg>
                     <span class="side-pill-text" data-i18n="common.project">项目主页</span>
                 </button>
+                <button class="side-pill" id="user-btn" onclick="window.icLogout && window.icLogout()" type="button" title="退出登录">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                        <polyline points="16 17 21 12 16 7"></polyline>
+                        <line x1="21" y1="12" x2="9" y2="12"></line>
+                    </svg>
+                    <span class="side-pill-text" id="user-btn-text">退出登录</span>
+                </button>
+                <button class="side-pill" id="admin-btn" onclick="window.open('/static/admin-users.html','_blank')" type="button" title="账号管理（管理员）" style="display:none">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                        <circle cx="9" cy="7" r="4"></circle>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                    </svg>
+                    <span class="side-pill-text">账号管理</span>
+                </button>
                 <button id="update-now-btn" class="update-now-btn" onclick="runProjectUpdate()" type="button" title="一键更新">
                     <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -752,7 +769,7 @@
             <iframe id="frame-online" data-src="/static/online.html?v=20260512-i18n2" scrolling="yes"></iframe>
             <iframe id="frame-gpt-chat" data-src="/static/gpt-chat.html?v=20260514-provider-chat-models" scrolling="yes"></iframe>
             <iframe id="frame-canvas" data-src="/static/canvas.html?v=20260521-prompt-node-lock" scrolling="yes"></iframe>
-            <iframe id="frame-api-settings" data-src="/static/api-settings.html?v=20260521-api-default-name" scrolling="yes"></iframe>
+            <iframe id="frame-api-settings" data-src="/static/api-settings.html?v=20260522-locked-baseurl" scrolling="yes"></iframe>
             <iframe id="frame-comfyui-settings" data-src="/static/comfyui-settings.html?v=20260519-random-number-active-wrap" scrolling="yes"></iframe>
 
             <div class="nano-monitor" id="nano-monitor">
@@ -1086,6 +1103,31 @@
                 // 离线包里没有网络时保持安静，不影响本地使用。
             }
         }
+    </script>
+    <script>
+        // === 账号系统：拉取当前用户，渲染侧栏，未登录跳登录页 ===
+        window.icLogout = async function() {
+            try {
+                await fetch('/api/auth/logout', {method: 'POST', credentials: 'include'});
+            } catch (e) {}
+            location.replace('/');
+        };
+        (async () => {
+            try {
+                const r = await fetch('/api/auth/me', {credentials: 'include', cache: 'no-store'});
+                const data = await r.json();
+                if (!data.authenticated) {
+                    location.replace('/');
+                    return;
+                }
+                const btn = document.getElementById('user-btn-text');
+                if (btn) btn.textContent = (data.username || '用户') + ' · 退出';
+                const adminBtn = document.getElementById('admin-btn');
+                if (adminBtn && data.is_admin) adminBtn.style.display = '';
+            } catch (e) {
+                console.warn('auth check failed', e);
+            }
+        })();
     </script>
 </body>
 

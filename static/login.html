@@ -83,6 +83,7 @@ form.addEventListener('submit', async (e) => {
     }
     const r = await fetch('/api/auth/login', {
       method: 'POST',
+      credentials: 'include',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({username, password}),
     });
@@ -102,6 +103,14 @@ form.addEventListener('submit', async (e) => {
       newPwField.style.display = 'block';
       document.getElementById('newPassword').focus();
       submitBtn.textContent = '保存新密码并进入';
+      submitBtn.disabled = false;
+      return;
+    }
+    // 再做一次 me 校验确认 cookie 真的写进去了，避免直接跳 / 又被打回登录页
+    const meR = await fetch('/api/auth/me', {credentials: 'include', cache: 'no-store'});
+    const me = await meR.json().catch(() => ({}));
+    if (!me.authenticated) {
+      errEl.textContent = '登录成功但浏览器未保存 cookie，请检查浏览器隐私设置 / 第三方 cookie 拦截';
       submitBtn.disabled = false;
       return;
     }
