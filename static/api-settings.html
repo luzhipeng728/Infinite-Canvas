@@ -612,6 +612,12 @@
             updateIdPreview();
             clearVerifyResult();
             baseInput.value = item.base_url || '';
+            // default 平台 + modelscope：base_url 服务端锁死，前端置灰只读
+            const isLockedBase = (item.id === 'default' || item.id === 'modelscope');
+            baseInput.readOnly = isLockedBase;
+            baseInput.title = isLockedBase ? '该平台的请求地址由服务端固定，不可修改' : '';
+            baseInput.style.cursor = isLockedBase ? 'not-allowed' : '';
+            baseInput.style.opacity = isLockedBase ? '0.6' : '';
             if(protocolInput) protocolInput.value = item.protocol || 'openai';
             if(imageGenerationEndpointInput) imageGenerationEndpointInput.value = item.image_generation_endpoint || '';
             if(imageEditEndpointInput) imageEditEndpointInput.value = item.image_edit_endpoint || '';
