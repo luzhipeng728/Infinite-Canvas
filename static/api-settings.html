@@ -270,7 +270,8 @@
                 <aside class="sidebar">
                     <div class="side-section-title" data-i18n="api.providersTitle">平台列表</div>
                     <div id="providerList" class="provider-list"></div>
-                    <button class="add-btn" type="button" onclick="addProvider()"><i data-lucide="plus" class="w-4 h-4"></i><span data-i18n="api.addProvider">新增平台</span></button>
+                    <!-- 已禁用新增平台：用户只能使用默认平台 -->
+                    <button class="add-btn" type="button" onclick="addProvider()" style="display:none"><i data-lucide="plus" class="w-4 h-4"></i><span data-i18n="api.addProvider">新增平台</span></button>
                     <a class="api-link-btn" href="http://104.238.205.50:11837" target="_blank" rel="noopener noreferrer"><i data-lucide="key-round" class="w-4 h-4"></i><span data-i18n="api.getApi">获取API</span></a>
                 </aside>
 

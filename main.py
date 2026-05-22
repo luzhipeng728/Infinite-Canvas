@@ -2669,8 +2669,12 @@ async def save_providers(payload: List[ApiProviderPayload]):
     existing_keys = {p["id"]: str(p.get("api_key") or "") for p in load_api_providers()}
     providers = []
     raw_primary_flags = [bool(getattr(item, "primary", False)) for item in payload]
+    ALLOWED_IDS = {"default", "modelscope"}
     for item in payload:
         provider = normalize_provider(item.dict(exclude={"api_key"}))
+        # 只允许内置的两个平台，禁止用户自建
+        if provider["id"] not in ALLOWED_IDS:
+            raise HTTPException(status_code=403, detail=f"不允许新增/修改自定义平台：{provider['id']}")
         # 默认平台 base_url 锁死为 FIXED_AI_BASE_URL，前端不能改
         if provider["id"] == "default":
             provider["base_url"] = FIXED_AI_BASE_URL
